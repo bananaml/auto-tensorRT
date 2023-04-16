@@ -1,0 +1,8 @@
+setup.py
+auto-tensorrt/__init__.py
+auto-tensorrt/tensorrt_model.py
+auto_tensorrt.egg-info/PKG-INFO
+auto_tensorrt.egg-info/SOURCES.txt
+auto_tensorrt.egg-info/dependency_links.txt
+auto_tensorrt.egg-info/requires.txt
+auto_tensorrt.egg-info/top_level.txt
