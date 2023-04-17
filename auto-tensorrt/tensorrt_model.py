@@ -22,7 +22,11 @@ class TensorRTModel:
     def _build_engine(self):
         TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
         builder = trt.Builder(TRT_LOGGER)
-        network = builder.create_network()
+        
+        # Use the EXPLICIT_BATCH flag when creating the network
+        explicit_batch_flag = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        network = builder.create_network(explicit_batch_flag)
+        
         parser = trt.OnnxParser(network, TRT_LOGGER)
 
         if self.model_type.lower() == "pytorch":
@@ -32,14 +36,21 @@ class TensorRTModel:
         else:
             raise ValueError("Invalid model_type. Supported types: 'pytorch', 'tensorflow'.")
 
-        parser.parse(onnx_model.SerializeToString())
+        success = parser.parse(onnx_model.SerializeToString())
 
-        builder.max_workspace_size = 1 << 28
-        builder.fp16_mode = self.fp16_mode
+        if not success:
+            for error in range(parser.num_errors):
+                print(parser.get_error(error))
 
-        engine = builder.build_cuda_engine(network)
+        config = builder.create_builder_config()
+        config.max_workspace_size = 1 << 28
+        config.set_flag(trt.BuilderFlag.FP16) if self.fp16_mode else None
+
+        engine = builder.build_engine(network, config)
 
         return engine
+
+
 
     def _convert_pytorch_to_onnx(self):
         model = self.model.eval()
