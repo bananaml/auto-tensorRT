@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='auto-tensorrt',
+    name='auto_tensorrt',
     version='0.0.1',
     packages=find_packages(),
     install_requires=[
@@ -10,6 +10,7 @@ setup(
         'tensorflow',
         'tensorrt',
         'pycuda',
-        'onnx'
+        'onnx',
+        'tf2onnx'
     ],
 )

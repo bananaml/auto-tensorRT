@@ -1,103 +1,37 @@
 import torch
 import torchvision
-import tensorflow as tf
 import tensorrt as trt
-import pycuda.driver as cuda
-import pycuda.autoinit
-import onnx
-import numpy as np
-import tf2onnx
 
+TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
-class TensorRTModel:
-    def __init__(self, model, model_type="pytorch", input_shape=(1, 3, 224, 224), fp16_mode=False):
-        self.model = model
-        self.model_type = model_type
-        self.input_shape = input_shape
-        self.fp16_mode = fp16_mode
+def convert_model_to_trt(model, input_shape, output_path, fp16_mode=False):
+    # Convert the model to TorchScript
+    model.eval()
+    scripted_model = torch.jit.trace(model, torch.zeros(input_shape))
 
-        self.engine = self._build_engine()
-        self.context = self.engine.create_execution_context()
+    # Create a TensorRT builder and network
+    builder = trt.Builder(TRT_LOGGER)
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    parser = trt.OnnxParser(network, TRT_LOGGER)
 
-    def _build_engine(self):
-        TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
-        builder = trt.Builder(TRT_LOGGER)
-        
-        # Use the EXPLICIT_BATCH flag when creating the network
-        explicit_batch_flag = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-        network = builder.create_network(explicit_batch_flag)
-        
-        parser = trt.OnnxParser(network, TRT_LOGGER)
+    # Parse the TorchScript model to TensorRT
+    with torch.no_grad():
+        onnx_model = torch.onnx.export(scripted_model, torch.zeros(input_shape), None, verbose=False, opset_version=11, do_constant_folding=True)
+    parser.parse(onnx_model.SerializeToString())
 
-        if self.model_type.lower() == "pytorch":
-            onnx_model = self._convert_pytorch_to_onnx()
-        elif self.model_type.lower() == "tensorflow":
-            onnx_model = self._convert_tensorflow_to_onnx()
-        else:
-            raise ValueError("Invalid model_type. Supported types: 'pytorch', 'tensorflow'.")
+    # Configure the builder and create the engine
+    config = builder.create_builder_config()
+    config.max_workspace_size = 1 << 30
+    if fp16_mode:
+        config.flags |= 1 << int(trt.BuilderFlag.FP16)
+    profile = builder.create_optimization_profile()
+    profile.set_shape("input", (1,) + input_shape[1:], input_shape, (1,) + input_shape[1:])
+    config.add_optimization_profile(profile)
 
-        success = parser.parse(onnx_model.SerializeToString())
+    engine = builder.build_engine(network, config)
 
-        if not success:
-            for error in range(parser.num_errors):
-                print(parser.get_error(error))
+    # Save the TensorRT engine to the specified output path
+    with open(output_path, "wb") as f:
+        f.write(engine.serialize())
 
-        config = builder.create_builder_config()
-        config.max_workspace_size = 1 << 28
-        config.set_flag(trt.BuilderFlag.FP16) if self.fp16_mode else None
-
-        engine = builder.build_engine(network, config)
-
-        return engine
-
-
-
-    def _convert_pytorch_to_onnx(self):
-        model = self.model.eval()
-        dummy_input = torch.randn(self.input_shape)
-        torch.onnx.export(model, dummy_input, "temp.onnx", verbose=False, opset_version=11)
-        onnx_model = onnx.load("temp.onnx")
-        return onnx_model
-
-    def _convert_tensorflow_to_onnx(self):
-        model = self.model
-        model_path = "temp.pb"
-        tf.saved_model.save(model, model_path)
-        onnx_model, _ = tf2onnx.convert.from_saved_model(model_path, opset=11)
-        return onnx_model
-
-    def forward(self, input_data):
-        if isinstance(input_data, torch.Tensor):
-            input_data = input_data.numpy()
-        elif not isinstance(input_data, np.ndarray):
-            raise ValueError("Input data must be a NumPy array or a PyTorch tensor.")
-
-        inputs, outputs, bindings, stream = self._allocate_buffers()
-
-        np.copyto(inputs[0].host, input_data.ravel())
-
-        with self.context as context:
-            cuda.memcpy_htod_async(inputs[0].device, inputs[0].host, stream)
-            context.execute_async(bindings=bindings, stream_handle=stream.handle)
-            cuda.memcpy_dtoh_async(outputs[0].host, outputs[0].device, stream)
-            stream.synchronize()
-
-        output_shape = tuple(self.engine.get_binding_shape(binding) for binding in self.engine if not self.engine.binding_is_input(binding))[0]
-        return torch.tensor(outputs[0].host.reshape(output_shape))
-
-    def _allocate_buffers(self):
-        inputs = []
-        outputs = []
-        bindings = []
-        stream = cuda.Stream()
-        for binding in self.engine:
-            size = trt.volume(self.engine.get_binding_shape(binding)) * self.engine.max_batch_size
-            dtype = trt.nptype(self.engine.get_binding_dtype(binding))
-            host_mem = cuda.pagelocked_empty(size, dtype)
-            device_mem = cuda.mem_alloc(host_mem.nbytes)
-            bindings.append(int(device_mem))
-            if self.engine.binding_is_input(binding):
-                inputs.append(trt.PluginTensorDesc(host_mem, device_mem))
-            else:
-                outputs.append(trt.PluginTensorDesc(host_mem, device_mem))
-        return inputs, outputs, bindings, stream
+    return output_path
