@@ -92,22 +92,23 @@ class Engine():
 
 
 model = whisper.load_model("base")
-# audio_enc = model.encoder
-# inputs = torch.randn(1,80,3000, dtype=torch.float16, device='cuda')
-# torch.onnx.export(audio_enc,               # model being run
-#                     inputs,                         # model input (or a tuple for multiple inputs)
-#                     "whisper_encoder.onnx",   # where to save the model (can be a file or file-like object)
-#                     export_params=True,        # store the trained parameter weights inside the model file
-#                     opset_version=12,          # the ONNX version to export the model to
-#                     do_constant_folding=True,  # whether to execute constant folding for optimization
-#                     input_names = ['input_0'],
-#                     output_names = ['output_0'])
+audio_enc = model.encoder
+inputs = torch.randn(1,80,3000, dtype=torch.float16, device='cuda')
+torch.onnx.export(audio_enc,               # model being run
+                     inputs,                         # model input (or a tuple for multiple inputs)
+                     "whisper_encoder.onnx",   # where to save the model (can be a file or file-like object)
+                     export_params=True,        # store the trained parameter weights inside the model file
+                     opset_version=12,          # the ONNX version to export the model to
+                     do_constant_folding=True,  # whether to execute constant folding for optimization
+                     input_names = ['input_0'],
+                     output_names = ['output_0'])
 
 encoder_engine = Engine("whisper_encoder","./trtengine")
-#encoder_engine.build("whisper_encoder.onnx",fp16=False,input_profile=None,enable_preview=False)
+encoder_engine.build("whisper_encoder.onnx",fp16=False,input_profile=None,enable_preview=False)
 encoder_engine.activate()
 encoder_engine.allocate_buffers(shape_dict={"input_0":(1,80,3000)}, device="cuda:0")
-# print(model.transcribe("test.mp3"))
+model.encoder = encoder_engine
+print(model.transcribe("test.mp3"))
 # import tensorrt as trt
 # TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 # builder = trt.Builder(TRT_LOGGER)
